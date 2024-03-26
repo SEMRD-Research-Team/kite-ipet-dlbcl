@@ -43,15 +43,21 @@ outpatient <- tbl(hes_con, in_schema("public", "outpatient"))
 hes_events <- pivot_hes(inpatient, outpatient)
 
 
-#Transfer codelist from protocal and upload to database
-kite_codelist <- read_excel(here::here("kite_codelist.xlsx"))
+#Transfer codelist from protocal and upload to database (dataset already uploaded to schema, no need to re-upload again)
+# kite_codelist <- read_excel(here::here("kite_codelist.xlsx"))
 
-cprd_con <- connect_to_db(database = "cprd")
-copy_to(cprd_con, kite_codelist, "kite_codelist",  overwrite = FALSE)
-
+# kite_codelist <- as.data.frame(kite_codelist)
+# cprd_con <- connect_to_db(database = "cprd")
+# copy_to(cprd_con, kite_codelist, "kite.kite_codelist",  overwrite = TRUE)
+# dplyr::compute(
+#   kite_codelist,
+#   name = dbplyr::in_schema("kite", "kite_codelist"),
+#   temporary = FALSE
+# )
 # db$upload(kite_codelist, "kite_codelist")
 
 #Load in codelist for kite
+kite_codelist <- tbl(db_con, in_schema("kite", "kite_codelist"))
 
 
 ```
@@ -62,21 +68,17 @@ copy_to(cprd_con, kite_codelist, "kite_codelist",  overwrite = FALSE)
 -Patients with DLBCL in the eligibility period with complete information (gender and DOB)
 -Patients with DLBCL in the eligibility period with complete information aged ≥18 years at diagnosis
 -Patients with DLBCL in the eligibility period with complete information, aged ≥18, without evidence of HSCT prior to 31 December 2020
--"STUDY POPULATION: Patients with DLBCL in the eligibility period and complete information, aged ≥18, without evidence of HSCT or any chemotherapy prior to 31 December 2020"
+-STUDY POPULATION: Patients with DLBCL in the eligibility period and complete information, aged ≥18, without evidence of HSCT or any chemotherapy prior to 31 December 2020
 
 
 # Inclusion
-1.	A diagnosis of DLBCL (ICD-10 coding C833 Diffuse large B-cell lymphoma) in the APC or OP datasets
+-A diagnosis of DLBCL (ICD-10 coding C833 Diffuse large B-cell lymphoma) in the APC or OP datasets
 
 
 ```{r}
 # dlbcl_cohort <- 
 #   kite_codelist %>%
 #     filter(Variable == "Diagnosis") %>%
-#     rename(code = Code,
-#            code_type = `Code type`,
-#            term = Description,
-#            category = Variable) %>%
 #     inner_join(hes_events, join_by(code ,code_type)) %>%
 #     select(-category) %>%
   
@@ -105,25 +107,27 @@ dlbcl_cohort %>%
   count() #40765
 
 #Patients identified with a code for DLBCL between 1 January 2021 and 30 April 2023
-dlbcl_cohort %>%
+dlbcl_cohort <-
+  dlbcl_cohort %>%
   filter(between(index_dlbcl_date, lookback_start, eligible_end)) %>%
+  compute()
+
+dlbcl_cohort %>%
   count() #37370
 
 
+#---------------------------------------------------------------------------------------------------------------SAVE TABLE?
+
 ```
 
-
 # Exclusion
-1.	≥18 years at diagnosis
-2.	Evidence of DLBCL or haematopoietic stem cell transplantation (HSCT) prior to 31 December 2020 (see codelist in Appendix)
-3.	Evidence of treatment with any chemotherapy within HES prior to 31 December 2020
-4.	Patients with missing gender or date of birth. 
+-<=18 years at diagnosis
+-Evidence of DLBCL or haematopoietic stem cell transplantation (HSCT) prior to 31 December 2020 (see codelist in Appendix)
+-Evidence of treatment with any chemotherapy within HES prior to 31 December 2020
+-Patients with missing gender or date of birth. 
 
 
-6 months follow-up?
-complete data linkage availability (including demographics?)
-
-```{r}
+```{r create_demogrphics_table}
 demographics <- list()
 
 demographics$ip <- inpatient %>%
@@ -139,4 +143,145 @@ index_dlbcl_demographics <- purrr::reduce(demographics, dplyr::union_all)
 
 ```
 
+
+Patients with DLBCL in the eligibility period with complete information (gender and DOB)
+
+```{r flag_no_sex_dob}
+
+dlbcl_cohort <-
+  dlbcl_cohort %>%
+    left_join(index_dlbcl_demographics, join_by(token_person_id, index_dlbcl_key, index_dlbcl_key_type)) %>%
+    mutate(age_sex_flag = if_else((is.na(index_dlbcl_sex) == FALSE) &
+                                  (is.na(index_dlbcl_age) == FALSE),
+                          1,
+                          0)) %>%
+    compute()
+
+dlbcl_cohort %>%
+  filter(age_sex_flag == 1) %>%
+  count()
+
+#---------------------------------------------------------------------------------------------------------------SAVE TABLE?
+
+```
+
+
+
+Patients with DLBCL in the eligibility period with complete information aged ≥18 years at diagnosis
+
+```{r flag_under18}
+
+dlbcl_cohort <-
+  dlbcl_cohort %>%
+  mutate(over18_flag = if_else(index_dlbcl_age >= 18, 1, 0)) %>%
+  compute()
+
+dlbcl_cohort %>%
+  filter(over18_flag == 1) %>%
+  count()
+
+
+```
+
+Patients with DLBCL in the eligibility period with complete information, aged ≥18, without evidence of HSCT prior to 31 December 2020
+
+```{r flag_hsct_before_study_start}
+dlbcl_cohort <- 
+  hes_events %>%
+    mutate(hsct_flag = 1) %>%
+    filter(between(event_date, lookback_start, lookback_end)) %>%
+    right_join(kite_codelist %>% 
+                filter(category == "HSCT") %>%
+                select(-category),
+              join_by(code, code_type),
+              copy = TRUE) %>%
+    right_join(dlbcl_cohort, 
+               join_by(token_person_id),
+               copy = TRUE) %>%
+    group_by(token_person_id) %>%
+    slice_min(event_date, n = 1, with_ties = FALSE) %>%
+    ungroup() %>%
+    mutate(hsct_flag = if_else(is.na(hsct_flag) == TRUE, 0, 1)) %>%
+    rename(
+      index_hsct_date = event_date,
+      index_hsct_code_type = code_type,
+      index_hsct_code = code
+    ) %>%
+    select(-key,
+           -code_index,
+           -key_type,
+           -term) %>%
+    compute()
+
+#Number of individuals with HSCT during lookback period
+dlbcl_cohort %>%
+  filter(hsct_flag == 1) %>%
+  count() #135
+
+#Number of individuals WITHOUT HSCT during lookback period, with complete info, age >=18
+dlbcl_cohort %>%
+  filter((hsct_flag == 0) &
+         (over18_flag == 1) &
+         (age_sex_flag == 1)) %>%
+  count()
+
+```
+
+-STUDY POPULATION: Patients with DLBCL in the eligibility period and complete information, aged ≥18, without evidence of HSCT or any chemotherapy prior to 31 December 2020
+
+```{r flag_chemotherapy_before_study_start}
+
+test <- 
+  hes_events %>%
+    mutate(chemotherapy_flag = 1) %>%
+    filter(between(event_date, lookback_start, lookback_end)) %>%
+    right_join(kite_codelist %>% 
+                filter(category == "Chemotherapy") %>%
+                select(-category),
+              join_by(code, code_type),
+              copy = TRUE) %>%
+    right_join(dlbcl_cohort, 
+               join_by(token_person_id),
+               copy = TRUE) %>%
+    group_by(token_person_id) %>%
+    slice_min(event_date, n = 1, with_ties = FALSE) %>%
+    ungroup() %>%
+    mutate(chemotherapy_flag = if_else(is.na(chemotherapy_flag) == TRUE, 0, 1)) %>%
+    rename(
+      index_chemo_date = event_date,
+      index_chemo_code_type = code_type,
+      index_chemo_code = code
+    ) %>%
+    select(-key,
+           -code_index,
+           -key_type,
+           -term) %>%
+    compute()
+
+#Number of individuals with chemotherapy during lookback period
+test %>%
+  filter(chemotherapy_flag == 1) %>%
+  count() #
+
+#Number of individuals WITHOUT HSCT or chemotherapy during lookback period, with complete info, age >=18
+test %>%
+  filter((chemotherapy_flag == 0) &
+         (hsct_flag == 0) &
+         (over18_flag == 1) &
+         (age_sex_flag == 1)) %>%
+  count()
+
+#---------------------------------------------------------------------------------------------------------------SAVE TABLE?
+
+```
+
+
+# Create index date
+Patients will be indexed on the date of their first recorded chemotherapy administration after DLBCL diagnosis or, if no chemotherapy is recorded, date of diagnosis of DLBCL. 
+If the first recorded chemotherapy is ≥6 weeks after the diagnosis, the patient will be indexed on their diagnosis date. 
+Where patients are diagnosed during inpatient admissions, the admission date (‘admidate’) for the admission will be used as the date of DLBCL diagnosis to ensure any chemotherapy administered during the same admission is captured. 
+
+
+
+# when using all the flags for the final eligibility flag, make sure to remember hsct flag should be 0
 

@@ -122,18 +122,3 @@ apply_cost_imputation <- function(df, cost) {
     dplyr::mutate({{ cost }} := dplyr::coalesce({{ cost }}, median_cost)) %>%
     dplyr::select(-"median_cost")
 }
-
-
-#' Get code lists from Shiny Code Browser
-get_code_lists <- function(db) {
-  stopifnot(inherits(db, "AgiosDb"))
-
-  db$table("all_project_codes", "code_lists") %>%
-    filter(project_id == "agios_23_003300_dr_11410") %>%
-    select(section, code, code_type, code_list_label) %>%
-    distinct() #%>%
-    # rename_code_lists(code_list_label)
-}
-
-#' dB <- AgiosDb$new()
-#' get_code_lists(dB)
