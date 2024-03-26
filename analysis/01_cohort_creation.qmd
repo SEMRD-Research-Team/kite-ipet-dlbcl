@@ -1,0 +1,142 @@
+---
+title: "Investigating positron emission tomography (PET) scan use in diffuse large B-cell lymphoma (DLBCL) - A Hospital Episode Statistics feasibility analysis"
+author: "Andre Ng"
+date: "`r Sys.Date()`"
+output: html_document
+format: html
+editor: source
+subtitle: "Cohort Creation"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+# renv::snapshot()
+#Check for any packaging issues
+renv::status()
+# renv::restore()
+
+
+```
+
+
+
+```{r load_libraries}
+library(coRanalysis)
+library(dplyr)
+library(dbplyr)
+library(tidyr)
+library(readxl)
+
+source(here::here("R", "setup.R"))
+
+
+#Load HES inpatient and APC data (outpatient)
+hes_con <- connect_to_db("hesdata_processed_hiq")
+
+inpatient <- tbl(hes_con, in_schema("public", "inpatient"))
+outpatient <- tbl(hes_con, in_schema("public", "outpatient"))
+
+
+#Combine diagnoses and procedures from inpatient and outpatient data
+hes_events <- pivot_hes(inpatient, outpatient)
+
+
+#Transfer codelist from protocal and upload to database
+kite_codelist <- read_excel(here::here("kite_codelist.xlsx"))
+
+cprd_con <- connect_to_db(database = "cprd")
+copy_to(cprd_con, kite_codelist, "kite_codelist",  overwrite = FALSE)
+
+# db$upload(kite_codelist, "kite_codelist")
+
+#Load in codelist for kite
+
+
+```
+
+
+# Attrition Table Overview
+-Patients identified with a code for DLBCL between 1 January 2021 and 30 April 2023
+-Patients with DLBCL in the eligibility period with complete information (gender and DOB)
+-Patients with DLBCL in the eligibility period with complete information aged ≥18 years at diagnosis
+-Patients with DLBCL in the eligibility period with complete information, aged ≥18, without evidence of HSCT prior to 31 December 2020
+-"STUDY POPULATION: Patients with DLBCL in the eligibility period and complete information, aged ≥18, without evidence of HSCT or any chemotherapy prior to 31 December 2020"
+
+
+# Inclusion
+1.	A diagnosis of DLBCL (ICD-10 coding C833 Diffuse large B-cell lymphoma) in the APC or OP datasets
+
+
+```{r}
+# dlbcl_cohort <- 
+#   kite_codelist %>%
+#     filter(Variable == "Diagnosis") %>%
+#     rename(code = Code,
+#            code_type = `Code type`,
+#            term = Description,
+#            category = Variable) %>%
+#     inner_join(hes_events, join_by(code ,code_type)) %>%
+#     select(-category) %>%
+  
+dlbcl_cohort <- 
+  hes_events %>%
+    filter(code == "C833",
+           code_type == "icd10") %>%
+    ###
+    filter(between(event_date, lookback_start, study_end)) %>% #within data period
+    # Get first event for each patient
+    group_by(token_person_id) %>%
+    slice_min(event_date, n = 1, with_ties = FALSE) %>%
+    ungroup() %>%
+    mutate(
+      token_person_id,
+      index_dlbcl_date = event_date,
+      index_dlbcl_code = code,
+      index_dlbcl_key = key,
+      index_dlbcl_key_type = key_type,
+      .keep = "none"
+    ) %>%
+    compute()
+
+#Total patients with DLBLCL from lookback date start to end of study period (within data period)
+dlbcl_cohort %>%
+  count() #40765
+
+#Patients identified with a code for DLBCL between 1 January 2021 and 30 April 2023
+dlbcl_cohort %>%
+  filter(between(index_dlbcl_date, lookback_start, eligible_end)) %>%
+  count() #37370
+
+
+```
+
+
+# Exclusion
+1.	≥18 years at diagnosis
+2.	Evidence of DLBCL or haematopoietic stem cell transplantation (HSCT) prior to 31 December 2020 (see codelist in Appendix)
+3.	Evidence of treatment with any chemotherapy within HES prior to 31 December 2020
+4.	Patients with missing gender or date of birth. 
+
+
+6 months follow-up?
+complete data linkage availability (including demographics?)
+
+```{r}
+demographics <- list()
+
+demographics$ip <- inpatient %>%
+  select(token_person_id, index_dlbcl_key = epikey, index_dlbcl_age = startage, index_dlbcl_sex = sex) %>%
+  mutate(index_dlbcl_type = "epikey", index_dlbcl_key = as.character(index_dlbcl_key))
+
+demographics$op <- outpatient %>%
+  select(token_person_id, index_dlbcl_key = attendkey, index_dlbcl_age = apptage, index_dlbcl_sex = sex) %>%
+  mutate(index_dlbcl_key_type = "attendkey", across(c(index_dlbcl_age, index_dlbcl_sex), as.integer))
+
+index_dlbcl_demographics <- purrr::reduce(demographics, dplyr::union_all)
+
+
+```
+
+
