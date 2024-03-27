@@ -77,16 +77,14 @@ kite_codelist <- tbl(db_con, in_schema("kite", "kite_codelist"))
 
 ```{r}
 # dlbcl_cohort <- 
-#   kite_codelist %>%
-#     filter(Variable == "Diagnosis") %>%
-#     inner_join(hes_events, join_by(code ,code_type)) %>%
-#     select(-category) %>%
-  
-dlbcl_cohort <- 
-  hes_events %>%
-    filter(code == "C833",
-           code_type == "icd10") %>%
-    ###
+#   hes_events %>%
+#     filter(code == "C833",
+#            code_type == "icd10") %>%
+
+dlbcl_cohort <-
+  kite_codelist %>%
+    filter(category == "Diagnosis") %>%
+    inner_join(hes_events, join_by(code_type, code), copy = TRUE) %>%
     filter(between(event_date, lookback_start, study_end)) %>% #within data period
     # Get first event for each patient
     group_by(token_person_id) %>%
@@ -116,7 +114,51 @@ dlbcl_cohort %>%
   count() #37370
 
 
-#---------------------------------------------------------------------------------------------------------------SAVE TABLE?
+
+
+# Upload table to database
+# coRanalysis::drop_compute(dlbcl_cohort, "dlbcl_cohort_pre_exclusion", "kite")
+# 
+# dplyr::compute(
+#   dlbcl_cohort,
+#   name = dbplyr::in_schema("kite", "dlbcl_cohort_pre_exclusion"),
+#   temporary = FALSE
+# )
+# Error in `db_compute()`:
+# ! Can't copy query to table "kite"."dlbcl_cohort_pre_exclusion".
+# Caused by error in `db_save_query.DBIConnection()`:
+# ! Can't save query to table "kite"."dlbcl_cohort_pre_exclusion".
+# ℹ Using SQL: CREATE TABLE "kite"."dlbcl_cohort_pre_exclusion" AS SELECT * FROM "dbplyr_0z9OIdLRg8"
+# Caused by error:
+# ! nanodbc/nanodbc.cpp:1710: 3F000
+# [Amazon][Amazon Redshift] (30) Error occurred while trying to execute a query: [SQLState 3F000] ERROR:  schema "kite" does not exist
+#  
+# Backtrace:
+#   1. dplyr::compute(...)
+#   2. dbplyr:::compute.tbl_sql(...)
+#   4. dbplyr:::db_compute.DBIConnection(...)
+#   7. dbplyr:::dbplyr_save_query(...)
+#   8. dbplyr:::dbplyr_fallback(con, "db_save_query", ...)
+#  10. dbplyr:::db_save_query.DBIConnection(con, ...)
+
+
+# compute(
+#   dlbcl_cohort,
+#   "dlbcl_cohort_pre_exclusion",
+#   temporary = FALSE
+# )
+# 
+# kiteDb$upload(dlbcl_cohort, "dlbcl_cohort_pre_exclusion")
+# 
+# coRanalysis::upload_to_db(
+#   dlbcl_cohort,
+#   "dlbcl_cohort_pre_exclusion",
+#   con = db_con,
+#   schema_name_db = "kite")
+# 
+# 
+# copy_to(db_con, dlbcl_cohort, "kite.dlbcl_cohort_pre_exclusion",  overwrite = TRUE)
+
 
 ```
 
@@ -131,14 +173,26 @@ dlbcl_cohort %>%
 demographics <- list()
 
 demographics$ip <- inpatient %>%
-  select(token_person_id, index_dlbcl_key = epikey, index_dlbcl_age = startage, index_dlbcl_sex = sex) %>%
-  mutate(index_dlbcl_type = "epikey", index_dlbcl_key = as.character(index_dlbcl_key))
+  select(token_person_id, 
+         index_dlbcl_key = epikey, 
+         index_dlbcl_age = startage, 
+         index_dlbcl_sex = sex,
+         index_dlbcl_admidate = admidate) %>%
+  mutate(index_dlbcl_key_type = "epikey", 
+         index_dlbcl_key = as.character(index_dlbcl_key), 
+         across(c(index_dlbcl_age, index_dlbcl_sex), as.integer), 
+         source = "inpatient")
 
 demographics$op <- outpatient %>%
-  select(token_person_id, index_dlbcl_key = attendkey, index_dlbcl_age = apptage, index_dlbcl_sex = sex) %>%
-  mutate(index_dlbcl_key_type = "attendkey", across(c(index_dlbcl_age, index_dlbcl_sex), as.integer))
+  select(token_person_id, 
+         index_dlbcl_key = attendkey, 
+         index_dlbcl_age = apptage, 
+         index_dlbcl_sex = sex) %>%
+  mutate(index_dlbcl_key_type = "attendkey", 
+         across(c(index_dlbcl_age, index_dlbcl_sex), as.integer), 
+         source = "outpatient")
 
-index_dlbcl_demographics <- purrr::reduce(demographics, dplyr::union_all)
+index_dlbcl_demographics <- purrr::reduce(demographics, dplyr::union_all) %>% compute()
 
 
 ```
@@ -159,7 +213,7 @@ dlbcl_cohort <-
 
 dlbcl_cohort %>%
   filter(age_sex_flag == 1) %>%
-  count()
+  count() #33139
 
 #---------------------------------------------------------------------------------------------------------------SAVE TABLE?
 
@@ -178,7 +232,7 @@ dlbcl_cohort <-
 
 dlbcl_cohort %>%
   filter(over18_flag == 1) %>%
-  count()
+  count() #33012
 
 
 ```
@@ -223,7 +277,7 @@ dlbcl_cohort %>%
   filter((hsct_flag == 0) &
          (over18_flag == 1) &
          (age_sex_flag == 1)) %>%
-  count()
+  count() #32884
 
 ```
 
@@ -231,7 +285,7 @@ dlbcl_cohort %>%
 
 ```{r flag_chemotherapy_before_study_start}
 
-test <- 
+dlbcl_cohort <- 
   hes_events %>%
     mutate(chemotherapy_flag = 1) %>%
     filter(between(event_date, lookback_start, lookback_end)) %>%
@@ -259,29 +313,41 @@ test <-
     compute()
 
 #Number of individuals with chemotherapy during lookback period
-test %>%
+dlbcl_cohort %>%
   filter(chemotherapy_flag == 1) %>%
-  count() #
+  count() #15693
 
 #Number of individuals WITHOUT HSCT or chemotherapy during lookback period, with complete info, age >=18
-test %>%
+dlbcl_cohort %>%
   filter((chemotherapy_flag == 0) &
          (hsct_flag == 0) &
          (over18_flag == 1) &
          (age_sex_flag == 1)) %>%
-  count()
+  count() #18307
 
 #---------------------------------------------------------------------------------------------------------------SAVE TABLE?
 
 ```
 
+# Create eligibility flag
 
-# Create index date
-Patients will be indexed on the date of their first recorded chemotherapy administration after DLBCL diagnosis or, if no chemotherapy is recorded, date of diagnosis of DLBCL. 
-If the first recorded chemotherapy is ≥6 weeks after the diagnosis, the patient will be indexed on their diagnosis date. 
-Where patients are diagnosed during inpatient admissions, the admission date (‘admidate’) for the admission will be used as the date of DLBCL diagnosis to ensure any chemotherapy administered during the same admission is captured. 
+For eligible patients that had gone through both inclusions and exclusion filters
+
+```{r}
+dlbcl_cohort <- 
+  dlbcl_cohort %>%
+    mutate(eligible_flag = if_else(
+      ((chemotherapy_flag == 0) &
+       (hsct_flag == 0) &
+       (over18_flag == 1) &
+       (age_sex_flag == 1)),
+      1,
+      0)
+    )
+
+
+```
 
 
 
-# when using all the flags for the final eligibility flag, make sure to remember hsct flag should be 0
 

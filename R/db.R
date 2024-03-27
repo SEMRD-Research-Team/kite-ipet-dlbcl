@@ -4,7 +4,7 @@ kiteDb <- R6::R6Class("kiteDb",
       lookup <- self$table("kite_code_lists", "kite")
 
       dplyr::filter(lookup, project_id == !!project_id) |>
-        dplyr::select("code_type", "code", "term", "section", "code_list_label", everything())
+        dplyr::select("code_type", "code", "term", everything())
     }
   ),
   public = list(

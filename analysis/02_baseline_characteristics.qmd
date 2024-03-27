@@ -1,0 +1,149 @@
+---
+title: "Investigating positron emission tomography (PET) scan use in diffuse large B-cell lymphoma (DLBCL) - A Hospital Episode Statistics feasibility analysis"
+author: "Andre Ng"
+date: "`r Sys.Date()`"
+output: html_document
+format: html
+editor: source
+subtitle: "Baseline Characteristics"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+# renv::snapshot()
+#Check for any packaging issues
+renv::status()
+# renv::restore()
+
+
+```
+
+```{r load_libraries_and_datasets}
+library(coRanalysis)
+library(dplyr)
+library(dbplyr)
+library(tidyr)
+library(readxl)
+
+source(here::here("R", "setup.R"))
+source(here::here("R", "util.R"))
+
+#Load in codelist for kite
+kite_codelist <- tbl(db_con, in_schema("kite", "kite_codelist"))
+
+
+#Load in cohort dataset
+
+#Load in hes_events table
+
+#--------------------------------------------------------------------------------------CURRENTLY THIS SCRIPT IS DEPENDENT ON 01_cohort_creation (ie run that first) because tables cannot be uploaded to database.
+
+```
+
+```{r setup}
+# Individual baseline characteristics - One row per pt
+pt_char <- list()
+
+# Cohort characteristics - Aggregated and formatted for output
+bs_char <- list()
+
+
+cohort <- dlbcl_cohort %>%
+  filter(eligible_flag == 1) %>%
+  select(token_person_id,
+         index_dlbcl_date,
+         index_dlbcl_key,
+         index_dlbcl_key_type,
+         index_dlbcl_age,
+         index_dlbcl_sex,
+         index_dlbcl_admidate,
+         source) %>%
+  compute()
+
+```
+
+
+# N (%) of patients with chemotherapy
+
+```{r n_pct_chemotherapy}
+#Number of patients with a diagnosis code for DLBCL identified during the eligibility period.
+
+pt_char$n_pct_chemotherapy <- 
+  hes_events %>%
+    mutate(eligible_chemotherapy_flag = 1) %>%
+    filter(between(event_date, eligible_start, eligible_end)) %>%
+    right_join(kite_codelist %>%
+                 filter(category == "Chemotherapy"),
+               join_by(code_type, code),
+               copy = TRUE) %>%
+    right_join(cohort,
+               join_by(token_person_id),
+               copy = TRUE) %>%
+    group_by(token_person_id) %>%
+    slice_min(event_date, n = 1, with_ties = FALSE) %>%
+    ungroup() %>%
+    mutate(eligible_chemotherapy_flag = if_else(is.na(eligible_chemotherapy_flag) == TRUE, 0, 1)) %>%
+    rename(
+      chemo_date = event_date,
+      chemo_code_type = code_type,
+      chemo_code = code
+    ) %>%
+    select(-key,
+           -code_index,
+           -key_type,
+           -term) %>%
+    compute()
+
+
+bs_char$n_pct_chemotherapy <- 
+  pt_char$n_pct_chemotherapy %>%
+    count(eligible_chemotherapy_flag) %>% #9348
+    collect() %>%
+    mutate(n = format_n_pct(n, sum(n))) %>%
+    rename(stat = n)
+
+
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Create index date
+Patients will be indexed on the date of their first recorded chemotherapy administration after DLBCL diagnosis or, if no chemotherapy is recorded, date of diagnosis of DLBCL. 
+If the first recorded chemotherapy is ≥6 weeks after the diagnosis, the patient will be indexed on their diagnosis date [of dlbcl?]. 
+Where patients are diagnosed [with dlbcl?] during inpatient admissions, the admission date (‘admidate’) for the admission [with dlbcl?] will be used as the date of DLBCL diagnosis to ensure any chemotherapy administered during the same admission is captured. 
