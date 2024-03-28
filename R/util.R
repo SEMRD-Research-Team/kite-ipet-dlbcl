@@ -122,3 +122,13 @@ apply_cost_imputation <- function(df, cost) {
     dplyr::mutate({{ cost }} := dplyr::coalesce({{ cost }}, median_cost)) %>%
     dplyr::select(-"median_cost")
 }
+
+summarise_categorical <- function(df, column) {
+  df %>%
+    count(!!sym(column)) %>%
+    mutate(n_formatted = format(n, big.mark = ","), # Add formatted n with comma separator
+           perc = scales::percent(n / sum(n), accuracy = 0.1)) %>%
+    unite("Count_Percent", n_formatted, perc, sep = " (", remove = FALSE) %>%
+    mutate(Count_Percent = paste0(Count_Percent, ")")) %>%
+    dplyr::select(!!sym(column), Count_Percent)
+}

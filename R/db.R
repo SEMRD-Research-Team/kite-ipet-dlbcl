@@ -12,7 +12,7 @@ kiteDb <- R6::R6Class("kiteDb",
     schema_public = "public",
     connection = NULL,
     initialize = function() {
-      self$connection <- coRanalysis::connect_to_db()
+      self$connection <- coRanalysis::connect_to_db(database = "hesdata_processed_hiq")
       # Set seed on Redshift. Crucial for reproducing control sampling
       DBI::dbExecute(self$connection, "SET SESSION SEED TO 0.1234")
     },

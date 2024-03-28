@@ -33,18 +33,24 @@ source(here::here("R", "setup.R"))
 
 
 #Load HES inpatient and APC data (outpatient)
-hes_con <- connect_to_db("hesdata_processed_hiq")
-
-inpatient <- tbl(hes_con, in_schema("public", "inpatient"))
-outpatient <- tbl(hes_con, in_schema("public", "outpatient"))
+inpatient <- tbl(db_con, in_schema("public", "inpatient"))
+outpatient <- tbl(db_con, in_schema("public", "outpatient"))
 
 
 #Combine diagnoses and procedures from inpatient and outpatient data
 hes_events <- pivot_hes(inpatient, outpatient)
 
+# Identify death dates
+deaths <- inpatient %>%
+  filter(dismeth == 4) %>%
+  group_by(token_person_id) %>%
+  summarise(death_date = min(epiend, na.rm = TRUE))
+
 
 #Transfer codelist from protocal and upload to database (dataset already uploaded to schema, no need to re-upload again)
 # kite_codelist <- read_excel(here::here("kite_codelist.xlsx"))
+# copy_to(db_con, kite_codelist, "kite.kite_codelist",  overwrite = TRUE)
+
 
 # kite_codelist <- as.data.frame(kite_codelist)
 # cprd_con <- connect_to_db(database = "cprd")
@@ -56,8 +62,18 @@ hes_events <- pivot_hes(inpatient, outpatient)
 # )
 # db$upload(kite_codelist, "kite_codelist")
 
-#Load in codelist for kite
+
+#Upload hes_events (dataset already uploaded to schema, no need to re-upload again)
+# coRanalysis::drop_compute(hes_events, "hes_events", "kite")
+
+#Upload deaths dataset (dataset already uploaded to schema, no need to re-upload again)
+# coRanalysis::drop_compute(deaths, "dlbcl_cohort_deaths", "kite")
+
+
+#Load in the datasets
 kite_codelist <- tbl(db_con, in_schema("kite", "kite_codelist"))
+# hes_events <- tbl(db_con, in_schema("kite", "hes_events"))
+deaths <- tbl(db_con, in_schema("kite", "dlbcl_cohort_deaths"))
 
 
 ```
@@ -76,15 +92,15 @@ kite_codelist <- tbl(db_con, in_schema("kite", "kite_codelist"))
 
 
 ```{r}
-# dlbcl_cohort <- 
-#   hes_events %>%
-#     filter(code == "C833",
-#            code_type == "icd10") %>%
+# dlbcl_cohort <-
+#   kite_codelist %>%
+#     filter(category == "Diagnosis") %>%
+#     inner_join(hes_events, join_by(code_type, code), copy = TRUE) %>%
 
 dlbcl_cohort <-
-  kite_codelist %>%
-    filter(category == "Diagnosis") %>%
-    inner_join(hes_events, join_by(code_type, code), copy = TRUE) %>%
+  hes_events %>%
+    filter(code == "C833",
+           code_type == "icd10") %>%
     filter(between(event_date, lookback_start, study_end)) %>% #within data period
     # Get first event for each patient
     group_by(token_person_id) %>%
@@ -116,49 +132,10 @@ dlbcl_cohort %>%
 
 
 
-# Upload table to database
+#Upload table to database (already uploaded, no need to upload again)
 # coRanalysis::drop_compute(dlbcl_cohort, "dlbcl_cohort_pre_exclusion", "kite")
-# 
-# dplyr::compute(
-#   dlbcl_cohort,
-#   name = dbplyr::in_schema("kite", "dlbcl_cohort_pre_exclusion"),
-#   temporary = FALSE
-# )
-# Error in `db_compute()`:
-# ! Can't copy query to table "kite"."dlbcl_cohort_pre_exclusion".
-# Caused by error in `db_save_query.DBIConnection()`:
-# ! Can't save query to table "kite"."dlbcl_cohort_pre_exclusion".
-# ℹ Using SQL: CREATE TABLE "kite"."dlbcl_cohort_pre_exclusion" AS SELECT * FROM "dbplyr_0z9OIdLRg8"
-# Caused by error:
-# ! nanodbc/nanodbc.cpp:1710: 3F000
-# [Amazon][Amazon Redshift] (30) Error occurred while trying to execute a query: [SQLState 3F000] ERROR:  schema "kite" does not exist
-#  
-# Backtrace:
-#   1. dplyr::compute(...)
-#   2. dbplyr:::compute.tbl_sql(...)
-#   4. dbplyr:::db_compute.DBIConnection(...)
-#   7. dbplyr:::dbplyr_save_query(...)
-#   8. dbplyr:::dbplyr_fallback(con, "db_save_query", ...)
-#  10. dbplyr:::db_save_query.DBIConnection(con, ...)
-
-
-# compute(
-#   dlbcl_cohort,
-#   "dlbcl_cohort_pre_exclusion",
-#   temporary = FALSE
-# )
-# 
-# kiteDb$upload(dlbcl_cohort, "dlbcl_cohort_pre_exclusion")
-# 
-# coRanalysis::upload_to_db(
-#   dlbcl_cohort,
-#   "dlbcl_cohort_pre_exclusion",
-#   con = db_con,
-#   schema_name_db = "kite")
-# 
-# 
-# copy_to(db_con, dlbcl_cohort, "kite.dlbcl_cohort_pre_exclusion",  overwrite = TRUE)
-
+#Load the cohort data in
+dlbcl_cohort <- tbl(db_con, in_schema("kite", "dlbcl_cohort_pre_exclusion"))
 
 ```
 
@@ -177,7 +154,8 @@ demographics$ip <- inpatient %>%
          index_dlbcl_key = epikey, 
          index_dlbcl_age = startage, 
          index_dlbcl_sex = sex,
-         index_dlbcl_admidate = admidate) %>%
+         index_dlbcl_admidate = admidate,
+         index_dlbcl_imd = imd04_decile) %>%
   mutate(index_dlbcl_key_type = "epikey", 
          index_dlbcl_key = as.character(index_dlbcl_key), 
          across(c(index_dlbcl_age, index_dlbcl_sex), as.integer), 
@@ -187,7 +165,8 @@ demographics$op <- outpatient %>%
   select(token_person_id, 
          index_dlbcl_key = attendkey, 
          index_dlbcl_age = apptage, 
-         index_dlbcl_sex = sex) %>%
+         index_dlbcl_sex = sex,
+         index_dlbcl_imd = imd04_decile) %>%
   mutate(index_dlbcl_key_type = "attendkey", 
          across(c(index_dlbcl_age, index_dlbcl_sex), as.integer), 
          source = "outpatient")
@@ -215,7 +194,6 @@ dlbcl_cohort %>%
   filter(age_sex_flag == 1) %>%
   count() #33139
 
-#---------------------------------------------------------------------------------------------------------------SAVE TABLE?
 
 ```
 
@@ -267,11 +245,6 @@ dlbcl_cohort <-
            -term) %>%
     compute()
 
-#Number of individuals with HSCT during lookback period
-dlbcl_cohort %>%
-  filter(hsct_flag == 1) %>%
-  count() #135
-
 #Number of individuals WITHOUT HSCT during lookback period, with complete info, age >=18
 dlbcl_cohort %>%
   filter((hsct_flag == 0) &
@@ -312,10 +285,6 @@ dlbcl_cohort <-
            -term) %>%
     compute()
 
-#Number of individuals with chemotherapy during lookback period
-dlbcl_cohort %>%
-  filter(chemotherapy_flag == 1) %>%
-  count() #15693
 
 #Number of individuals WITHOUT HSCT or chemotherapy during lookback period, with complete info, age >=18
 dlbcl_cohort %>%
@@ -325,7 +294,6 @@ dlbcl_cohort %>%
          (age_sex_flag == 1)) %>%
   count() #18307
 
-#---------------------------------------------------------------------------------------------------------------SAVE TABLE?
 
 ```
 
@@ -343,11 +311,43 @@ dlbcl_cohort <-
        (age_sex_flag == 1)),
       1,
       0)
-    )
+    ) %>%
+    compute()
+
+#Save the table (already uploaded, no need to upload again)
+# coRanalysis::drop_compute(dlbcl_cohort, "dlbcl_cohort", "kite")
 
 
 ```
 
 
+```{r CODE DUMP}
 
 
+
+# dplyr::compute(
+#   dlbcl_cohort,
+#   name = dbplyr::in_schema("kite", "dlbcl_cohort_pre_exclusion"),
+#   temporary = FALSE
+# )
+# Backtrace:
+#   1. dplyr::compute(...)
+#   2. dbplyr:::compute.tbl_sql(...)
+#   4. dbplyr:::db_compute.DBIConnection(...)
+#   7. dbplyr:::dbplyr_save_query(...)
+#   8. dbplyr:::dbplyr_fallback(con, "db_save_query", ...)
+#  10. dbplyr:::db_save_query.DBIConnection(con, ...)
+
+# kiteDb$upload(dlbcl_cohort, "dlbcl_cohort_pre_exclusion")
+# 
+# coRanalysis::upload_to_db(
+#   dlbcl_cohort,
+#   "dlbcl_cohort_pre_exclusion",
+#   con = db_con,
+#   schema_name_db = "kite")
+# 
+# 
+# copy_to(db_con, dlbcl_cohort, "kite.dlbcl_cohort_pre_exclusion",  overwrite = TRUE)
+
+
+```

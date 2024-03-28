@@ -35,10 +35,17 @@ kite_codelist <- tbl(db_con, in_schema("kite", "kite_codelist"))
 
 
 #Load in cohort dataset
+dlbcl_cohort <- tbl(db_con, in_schema("kite", "dlbcl_cohort"))
+  
+#Load HES inpatient and APC data (outpatient)
+inpatient <- tbl(db_con, in_schema("public", "inpatient"))
+outpatient <- tbl(db_con, in_schema("public", "outpatient"))
 
-#Load in hes_events table
+#Combine diagnoses and procedures from inpatient and outpatient data
+hes_events <- pivot_hes(inpatient, outpatient)
 
-#--------------------------------------------------------------------------------------CURRENTLY THIS SCRIPT IS DEPENDENT ON 01_cohort_creation (ie run that first) because tables cannot be uploaded to database.
+#Load in deaths table
+deaths <- tbl(db_con, in_schema("kite", "dlbcl_cohort_deaths"))
 
 ```
 
@@ -59,6 +66,7 @@ cohort <- dlbcl_cohort %>%
          index_dlbcl_age,
          index_dlbcl_sex,
          index_dlbcl_admidate,
+         index_dlbcl_imd,
          source) %>%
   compute()
 
@@ -68,11 +76,11 @@ cohort <- dlbcl_cohort %>%
 # N (%) of patients with chemotherapy
 
 ```{r n_pct_chemotherapy}
-#Number of patients with a diagnosis code for DLBCL identified during the eligibility period.
+#Number of dlbcl patients with a diagnosis code for chemotherapy identified during the eligibility period.
 
-pt_char$n_pct_chemotherapy <- 
+cohort <- 
   hes_events %>%
-    mutate(eligible_chemotherapy_flag = 1) %>%
+    # mutate(eligible_chemotherapy_flag = 1) %>% ---------------------------------------------------------------THIS IS IF EXCLUDE CHEMO BEFORE ELIGIBLE PERIOD
     filter(between(event_date, eligible_start, eligible_end)) %>%
     right_join(kite_codelist %>%
                  filter(category == "Chemotherapy"),
@@ -84,7 +92,7 @@ pt_char$n_pct_chemotherapy <-
     group_by(token_person_id) %>%
     slice_min(event_date, n = 1, with_ties = FALSE) %>%
     ungroup() %>%
-    mutate(eligible_chemotherapy_flag = if_else(is.na(eligible_chemotherapy_flag) == TRUE, 0, 1)) %>%
+    # mutate(eligible_chemotherapy_flag = if_else(is.na(eligible_chemotherapy_flag) == TRUE, 0, 1)) %>% --------THIS IS IF EXCLUDE CHEMO BEFORE ELIGIBLE PERIOD
     rename(
       chemo_date = event_date,
       chemo_code_type = code_type,
@@ -93,57 +101,151 @@ pt_char$n_pct_chemotherapy <-
     select(-key,
            -code_index,
            -key_type,
-           -term) %>%
+           -term,
+           -category) %>%
     compute()
 
+# ---------------------------------------------------------------------------------------------------------THIS IS IF EXCLUDE CHEMO BEFORE DLBCL DIAGNOSIS DATE
+cohort <- 
+  cohort %>%
+    mutate(eligible_chemotherapy_flag = if_else(
+      (is.na(chemo_date) == FALSE) &
+      (chemo_date >= index_dlbcl_date),
+      1,
+      0))
+
+
+pt_char$n_pct_chemotherapy <- cohort
 
 bs_char$n_pct_chemotherapy <- 
   pt_char$n_pct_chemotherapy %>%
-    count(eligible_chemotherapy_flag) %>% #9348
+    count(eligible_chemotherapy_flag) %>% #9348 or 8012
     collect() %>%
     mutate(n = format_n_pct(n, sum(n))) %>%
     rename(stat = n)
 
 
+```
 
+# Time between diagnosis and first chemo (internal adhoc request)
+
+```{r}
+
+cohort %>%
+  mutate(diag_chemo_years = (datediff("day", index_dlbcl_date, chemo_date)) / 365.25) %>%
+  standard_summary(diag_chemo_years)
 
 
 ```
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # Create index date
-Patients will be indexed on the date of their first recorded chemotherapy administration after DLBCL diagnosis or, if no chemotherapy is recorded, date of diagnosis of DLBCL. 
-If the first recorded chemotherapy is ≥6 weeks after the diagnosis, the patient will be indexed on their diagnosis date [of dlbcl?]. 
-Where patients are diagnosed [with dlbcl?] during inpatient admissions, the admission date (‘admidate’) for the admission [with dlbcl?] will be used as the date of DLBCL diagnosis to ensure any chemotherapy administered during the same admission is captured. 
+-Patients will be indexed on the date of their first recorded chemotherapy administration after DLBCL diagnosis or, if no chemotherapy is recorded, date of diagnosis of DLBCL.
+
+-Where patients are diagnosed [with dlbcl?] during inpatient admissions, the admission date (‘admidate’) for the admission [with dlbcl] will be used as the date of DLBCL diagnosis to ensure any chemotherapy administered during the same admission is captured. 
+
+-Patients with chemotherapy dates BEFORE DLBCL diagnosis, use chemotherapy date instead?? --------------------ASK JEN
+
+-If the first recorded chemotherapy is ≥6 weeks after the diagnosis, the patient will be indexed on their diagnosis date [of dlbcl]. 
+
+
+```{r create_index_date}
+#----------------------------------------------------------------------------------------------------------THIS IS IF EXCLUDE CHEMO BEFORE ELIGIBLE PERIOD
+cohort <-
+  cohort %>%
+    arrange(token_person_id) %>%
+      #Inpatient patients use admidate instead of index_dlbcl_date
+      mutate(index_date = if_else(
+        (source == "inpatient"), 
+            index_dlbcl_admidate, 
+            index_dlbcl_date)) %>%
+      #Chemo patients with chemodate <6 weeks after dlbcl_date use chemodate, else use index_dlbcl_date or index_dlbcl_admidate
+      mutate(index_date = if_else(
+        ((eligible_chemotherapy_flag == 1) &
+        (datediff("day", index_dlbcl_date, chemo_date) < 42)),
+            chemo_date,
+            index_date))
+
+
+```
+
+
+# Create follow-up end date for each patient
+
+Follow up will end at the earliest of inpatient death or the end of the study period 30 November 2023 (or the latest available data). Inpatient death here refers to people whose death we observe during a hospital admission recorded in APC. 
+
+```{r create_end_date}
+
+cohort <-
+  cohort %>%
+    left_join(deaths, join_by(token_person_id)) %>%
+    mutate(end_date = if_else(
+             (is.na(death_date) == FALSE),
+             death_date,
+             as.Date("2023-11-30")),
+           death_flag = if_else(
+             (is.na(death_date) == FALSE),
+             1,
+             0)
+          )
+
+#SAVE TABLE?----------------------------------------------------------------------------  
+
+
+```
+
+# Follow-up time
+
+```{r follow_up_time}
+
+pt_char$followup <-
+  cohort %>%
+    mutate(follow_up_years = (datediff("day", index_date, end_date)) / 365.25)
+
+bs_char$followup <-
+  cohort %>%
+  mutate(follow_up_years = (datediff("day", index_date, end_date)) / 365.25) %>%
+  standard_summary(follow_up_years)
+
+```
+
+# Age
+```{r age}
+
+bs_char$age <-
+  cohort %>%
+  standard_summary(index_dlbcl_age)
+
+```
+
+# Gender
+```{r}
+bs_char$gender <-
+  cohort %>%
+  select(index_dlbcl_sex) %>%
+  count(index_dlbcl_sex) %>%
+  collect() %>%
+  mutate(index_dlbcl_sex = factor(index_dlbcl_sex, c(1,2,0,9), c("Male", "Female", "Unknown", "Unknown"))) %>%
+  fill_n(index_dlbcl_sex) %>%
+  mutate(n = format_n_pct(n, sum(n)))
+  # pivot_stat(index_dlbcl_sex) %>%
+  # select(Male, Female, Unknown)
+
+```
+
+# IMD
+```{r}
+
+bs_char$deprivation <- 
+  cohort %>%
+    collect() %>%
+    mutate(index_dlbcl_imd = (as.numeric(index_dlbcl_imd) + 1) %/% 2) %>% #use remainder division to convert deciles to quintiles
+    summarise_categorical("index_dlbcl_imd") %>%
+    rename(stat = Count_Percent) %>%
+    arrange(as.numeric(stat))
+    # pivot_wider(names_from = index_dlbcl_imd, values_from = stat)
+
+
+```
+
+
