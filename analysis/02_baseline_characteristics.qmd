@@ -169,6 +169,20 @@ cohort <-
             chemo_date,
             index_date))
 
+#Calculate number of individuals with chemo dates and individuals with dlbcl dates for index
+#This is used for footnotes in the results table
+cohort %>%
+  mutate(index_date_chemo_flag = if_else(
+    (datediff("day", index_dlbcl_date, chemo_date) < 42) &
+    (datediff("day", index_dlbcl_date, chemo_date) > 0),
+    1,
+    0
+  )) %>%
+  count(index_date_chemo_flag)
+#4879 are 0s (index_dlbcl_date or index_dlbcl_admidate as index_date),
+#2964 are 1s (chemo_date as index_date)
+
+
 
 ```
 
