@@ -1,0 +1,242 @@
+---
+title: "Investigating positron emission tomography (PET) scan use in diffuse large B-cell lymphoma (DLBCL) - A Hospital Episode Statistics feasibility analysis"
+author: "Andre Ng"
+date: "`r Sys.Date()`"
+output: html_document
+format: html
+editor: source
+subtitle: "Feasibility Analysis"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+# renv::snapshot()
+#Check for any packaging issues
+renv::status()
+# renv::restore()
+
+
+```
+
+```{r load_libraries_and_datasets}
+library(coRanalysis)
+library(dplyr)
+library(dbplyr)
+library(tidyr)
+library(readxl)
+
+source(here::here("R", "setup.R"))
+source(here::here("R", "util.R"))
+
+#Load in codelist for kite
+kite_codelist <- tbl(db_con, in_schema("kite", "kite_codelist"))
+
+#Load in cohort dataset
+eligible_cohort <- tbl(db_con, in_schema("kite", "eligible_dlbcl_cohort"))
+
+#Load HES inpatient and APC data (outpatient)
+inpatient <- tbl(db_con, in_schema("public", "inpatient"))
+outpatient <- tbl(db_con, in_schema("public", "outpatient"))
+
+#Combine diagnoses and procedures from inpatient and outpatient data
+hes_events <- pivot_hes(inpatient, outpatient)
+
+#Load in deaths table
+deaths <- tbl(db_con, in_schema("kite", "dlbcl_cohort_deaths"))
+
+# Feasibility analysis
+fsb_analysis <- list()
+
+
+
+```
+
+# Number of patients with DLBCL recorded (that are eligible)
+
+```{r}
+eligible_cohort %>%
+  count() #11227
+
+```
+
+# PET scanning - N(%) of all patients with ≥1 PET scan post index*
+
+```{r}
+final_cohort <-
+  hes_events %>%
+    filter(between(event_date, eligible_start, eligible_end)) %>%
+    right_join(kite_codelist %>%
+                filter(category == "PET scan"),
+              join_by(code_type, code)) %>%
+    right_join(eligible_cohort, join_by(token_person_id, event_date > index_date)) %>%
+    group_by(token_person_id) %>%
+    # mutate(ipet_flag = if_else((datediff("day", event_date, index_date) > 0), 1, 0)) %>%
+    slice_min(event_date, n = 1, with_ties = FALSE) %>%
+    ungroup() %>%
+    mutate(ipet_flag = if_else((is.na(event_date) == FALSE), 1, 0)) %>%
+    # mutate(ipet_flag = if_else(is.na(ipet_flag) == TRUE, 0, 1)) %>%
+    # mutate(event_date = if_else(ipet_flag == 1, event_date, NA)) %>%
+    rename(
+      ipet_date = event_date,
+      ipet_code = code
+    ) %>%
+    select(-key,
+           -code_type,
+           -code_index,
+           -key_type,
+           -term,
+           -category) %>%
+    compute()
+
+#Save the table (already uploaded, no need to upload again)
+# coRanalysis::drop_compute(final_cohort, "final_cohort", "kite")
+
+fsb_analysis$n_pct_pet <-
+  final_cohort %>%
+    count(ipet_flag) %>%
+    collect() %>%
+    fill_n(ipet_flag) %>%
+    mutate(n = format_n_pct(n, sum(n))) #1,759 (15.7%)
+
+```
+
+Number of patients with  ≥1 PET scan post index stratified by year of index
+
+```{r}
+fsb_analysis$n_per_year <- tibble(Year = numeric(), Num = numeric())
+
+#Create a for loop that calculates the number of index cases per year
+for (i in 2021:2023){
+  #Calculate number of cases for the year i
+  number_of_cases <- 
+    final_cohort %>%
+    filter(ipet_flag == 1) %>%
+    filter(year(index_date) == i) %>%
+    count() %>%
+    pull()
+  
+  #Add a row based on the year and the number of index cases in that year
+  fsb_analysis$n_per_year <- 
+    fsb_analysis$n_per_year %>%
+    add_row(Year = i, Num = as.numeric(number_of_cases))
+}
+
+# #Format to wide
+# fsb_analysis$n_per_year <-
+#   fsb_analysis$n_per_year %>%
+#     pivot_wider(
+#       names_from = Year,
+#       values_from = Num
+#     ) %>%
+#   mutate(blank = "") 
+
+
+```
+
+Number of days from index to 1st iPET scan (amongst those with iPET)
+
+```{r}
+fsb_analysis$days_index_to_first_ipet <-
+  final_cohort %>%
+    filter(ipet_flag == 1) %>%
+    mutate(index_to_ipet_days = datediff("day", index_date, ipet_date)) %>%
+    standard_summary(index_to_ipet_days)
+
+
+```
+
+Number of chemotherapy treatment cycles from index date to 1st iPET (amongst those with iPET)
+
+```{r}
+fsb_analysis$num_chemo_cycle_index_to_ipet <-
+  final_cohort %>%
+    filter(ipet_flag == 1) %>%
+    mutate(index_to_ipet_cycles = (datediff("day", index_date, ipet_date)/21)) %>%
+    standard_summary(index_to_ipet_cycles)
+
+
+```
+
+
+Histogram 1: Timing of first iPET in days from index
+
+```{r index_to_first_ipet_days}
+fsb_analysis$hist_index_to_ipet_cohort <-
+  final_cohort %>%
+    filter(ipet_flag == 1) %>%
+    mutate(index_to_ipet_days = datediff("day", index_date, ipet_date)) %>%
+    select(index_to_ipet_days)
+
+#| warning: false
+ get_colours = function() {
+      coRanalysis::get_corevitas_palettes()[["cor_col_pri"]]
+    }
+
+orange <- get_colours()[["orange"]]
+
+plots <- list()
+
+plots$hist_index_to_ipet_cohort <-
+    fsb_analysis$hist_index_to_ipet_cohort %>%
+    ggplot(aes(x = index_to_ipet_days)) +
+    geom_histogram(binwidth = 5, fill = orange) +
+    labs(
+        x = "Number of days",
+        y = "Number of readings",
+        title = "Number of days between index DLBCL and iPET"
+    )  +
+    theme_bw() +
+    theme(
+        panel.grid.minor = element_blank()
+    )
+plots$hist_index_to_ipet_cohort
+
+# #| warning: false
+# plots$raw_hist_unit_description <-
+#     plots$raw_hist +
+#     facet_wrap(~ "test", scales = "free") +
+#     theme(
+#         strip.background = element_rect(fill = orange),
+#         strip.text = element_text(colour = "white", face = "bold")
+#     )
+# 
+# plots$raw_hist_unit_description
+
+```
+
+Histogram 2: Timing of first iPET in number of treatment cycles from index
+
+```{r}
+fsb_analysis$hist_index_to_ipet_cycles_cohort <-
+  final_cohort %>%
+    filter(ipet_flag == 1) %>%
+    mutate(index_to_ipet_cycles = (datediff("day", index_date, ipet_date)/21))
+
+#| warning: false
+ get_colours = function() {
+      coRanalysis::get_corevitas_palettes()[["cor_col_pri"]]
+    }
+
+orange <- get_colours()[["orange"]]
+
+plots <- list()
+
+plots$hist_index_to_ipet_cycles_cohort <-
+    fsb_analysis$hist_index_to_ipet_cycles_cohort %>%
+    ggplot(aes(x = index_to_ipet_cycles)) +
+    geom_histogram(binwidth = 1, fill = orange) +
+    labs(
+        x = "Number of cycles",
+        y = "Number of readings",
+        title = "Number of treatment cycles between index DLBCL and iPET"
+    )  +
+    theme_bw() +
+    theme(
+        panel.grid.minor = element_blank()
+    )
+plots$hist_index_to_ipet_cycles_cohort
+
+
+```

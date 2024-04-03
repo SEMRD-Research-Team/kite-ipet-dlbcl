@@ -49,19 +49,8 @@ deaths <- inpatient %>%
 
 #Transfer codelist from protocal and upload to database (dataset already uploaded to schema, no need to re-upload again)
 # kite_codelist <- read_excel(here::here("kite_codelist.xlsx"))
-# copy_to(db_con, kite_codelist, "kite.kite_codelist",  overwrite = TRUE)
-
-
 # kite_codelist <- as.data.frame(kite_codelist)
-# cprd_con <- connect_to_db(database = "cprd")
-# copy_to(cprd_con, kite_codelist, "kite.kite_codelist",  overwrite = TRUE)
-# dplyr::compute(
-#   kite_codelist,
-#   name = dbplyr::in_schema("kite", "kite_codelist"),
-#   temporary = FALSE
-# )
-# db$upload(kite_codelist, "kite_codelist")
-
+# copy_to(db_con, kite_codelist, "kite.kite_codelist",  overwrite = TRUE)
 
 #Upload hes_events (dataset already uploaded to schema, no need to re-upload again)
 # coRanalysis::drop_compute(hes_events, "hes_events", "kite")
@@ -88,7 +77,7 @@ deaths <- tbl(db_con, in_schema("kite", "dlbcl_cohort_deaths"))
 
 
 # Inclusion
--A diagnosis of DLBCL (ICD-10 coding C833 Diffuse large B-cell lymphoma) in the APC or OP datasets
+-A diagnosis of DLBCL (ICD-10 coding C833 Diffuse large B-cell lymphoma) in the APC or OP datasets within the eligibility period
 
 
 ```{r}
@@ -116,18 +105,14 @@ dlbcl_cohort <-
     ) %>%
     compute()
 
-#Total patients with DLBLCL from lookback date start to end of study period (within data period)
-dlbcl_cohort %>%
-  count() #40765
-
 #Patients identified with a code for DLBCL between 1 January 2021 and 30 April 2023
 dlbcl_cohort <-
   dlbcl_cohort %>%
-  filter(between(index_dlbcl_date, lookback_start, eligible_end)) %>%
+  filter(between(index_dlbcl_date, eligible_start, eligible_end)) %>% #within eligibility period
   compute()
 
 dlbcl_cohort %>%
-  count() #37370
+  count() #15439
 
 
 
@@ -141,10 +126,13 @@ dlbcl_cohort <- tbl(db_con, in_schema("kite", "dlbcl_cohort_pre_exclusion"))
 
 # Exclusion
 -<=18 years at diagnosis
--Evidence of DLBCL or haematopoietic stem cell transplantation (HSCT) prior to 31 December 2020 (see codelist in Appendix)
--Evidence of treatment with any chemotherapy within HES prior to 31 December 2020
--Patients with missing gender or date of birth. 
+<!-- -Evidence of DLBCL or haematopoietic stem cell transplantation (HSCT) prior to 31 December 2020 (see codelist in Appendix) -->
+<!-- -Evidence of treatment with any chemotherapy within HES prior to 31 December 2020 -->
+<!-- -Patients with missing gender or date of birth.  -->
 
+-Evidence of DLBCL or haematopoietic stem cell transplantation (HSCT) prior earliest DLBCL diagnosis in the eligibility period, i.e., prior to index date (see codelist in Appendix)
+-Evidence of treatment with any chemotherapy within HES prior to earliest DLBCL diagnosis in the eligibility period
+-Patients with missing gender or date of birth. 
 
 ```{r create_demogrphics_table}
 demographics <- list()
@@ -192,7 +180,7 @@ dlbcl_cohort <-
 
 dlbcl_cohort %>%
   filter(age_sex_flag == 1) %>%
-  count() #33139
+  count() #13430
 
 
 ```
@@ -210,18 +198,19 @@ dlbcl_cohort <-
 
 dlbcl_cohort %>%
   filter(over18_flag == 1) %>%
-  count() #33012
+  count() #13373
 
 
 ```
 
-Patients with DLBCL in the eligibility period with complete information, aged ≥18, without evidence of HSCT prior to 31 December 2020
+Patients with DLBCL in the eligibility period with complete information, aged ≥18, without evidence of HSCT or previous DLBCL diagnosis prior to index DLBCL diagnosis
 
-```{r flag_hsct_before_study_start}
+```{r flag_hsct_before_dlbcl}
+#Remove individuals with previous HSCT diagnoses
+
 dlbcl_cohort <- 
   hes_events %>%
-    mutate(hsct_flag = 1) %>%
-    filter(between(event_date, lookback_start, lookback_end)) %>%
+    filter(between(event_date, lookback_start, study_end)) %>%
     right_join(kite_codelist %>% 
                 filter(category == "HSCT") %>%
                 select(-category),
@@ -231,9 +220,13 @@ dlbcl_cohort <-
                join_by(token_person_id),
                copy = TRUE) %>%
     group_by(token_person_id) %>%
+    #Create flag for HSCT before dlbcl diagnosis date
+    mutate(pre_dlbcl_hsct_flag = if_else((event_date < index_dlbcl_date), 1, 0)) %>%
     slice_min(event_date, n = 1, with_ties = FALSE) %>%
     ungroup() %>%
-    mutate(hsct_flag = if_else(is.na(hsct_flag) == TRUE, 0, 1)) %>%
+    mutate(pre_dlbcl_hsct_flag = if_else(is.na(pre_dlbcl_hsct_flag) == TRUE, 
+                                         0, 
+                                         pre_dlbcl_hsct_flag)) %>%
     rename(
       index_hsct_date = event_date,
       index_hsct_code_type = code_type,
@@ -247,21 +240,20 @@ dlbcl_cohort <-
 
 #Number of individuals WITHOUT HSCT during lookback period, with complete info, age >=18
 dlbcl_cohort %>%
-  filter((hsct_flag == 0) &
+  filter((pre_dlbcl_hsct_flag == 0) &
          (over18_flag == 1) &
          (age_sex_flag == 1)) %>%
-  count() #32884
+  count() #13334
 
 ```
 
--STUDY POPULATION: Patients with DLBCL in the eligibility period and complete information, aged ≥18, without evidence of HSCT or any chemotherapy prior to 31 December 2020
+-STUDY POPULATION: Patients with DLBCL in the eligibility period and complete information, aged ≥18, without evidence of HSCT or any chemotherapy prior to DLBCL diagnosis date
 
-```{r flag_chemotherapy_before_study_start}
+```{r flag_chemotherapy_before_dlbcl}
 
 dlbcl_cohort <- 
   hes_events %>%
-    mutate(chemotherapy_flag = 1) %>%
-    filter(between(event_date, lookback_start, lookback_end)) %>%
+    filter(between(event_date, lookback_start, study_end)) %>%
     right_join(kite_codelist %>% 
                 filter(category == "Chemotherapy") %>%
                 select(-category),
@@ -271,9 +263,11 @@ dlbcl_cohort <-
                join_by(token_person_id),
                copy = TRUE) %>%
     group_by(token_person_id) %>%
+    #Create flag for chemotherapy before dlbcl diagnosis date
+    mutate(pre_dlbcl_chemo_flag = if_else((event_date < index_dlbcl_date), 1, 0)) %>%
     slice_min(event_date, n = 1, with_ties = FALSE) %>%
     ungroup() %>%
-    mutate(chemotherapy_flag = if_else(is.na(chemotherapy_flag) == TRUE, 0, 1)) %>%
+    mutate(pre_dlbcl_chemo_flag = if_else(is.na(pre_dlbcl_chemo_flag) == TRUE, 0, pre_dlbcl_chemo_flag)) %>%
     rename(
       index_chemo_date = event_date,
       index_chemo_code_type = code_type,
@@ -288,11 +282,11 @@ dlbcl_cohort <-
 
 #Number of individuals WITHOUT HSCT or chemotherapy during lookback period, with complete info, age >=18
 dlbcl_cohort %>%
-  filter((chemotherapy_flag == 0) &
-         (hsct_flag == 0) &
+  filter((pre_dlbcl_chemo_flag == 0) &
+         (pre_dlbcl_hsct_flag == 0) &
          (over18_flag == 1) &
          (age_sex_flag == 1)) %>%
-  count() #18307
+  count() #28563
 
 
 ```
@@ -305,20 +299,22 @@ For eligible patients that had gone through both inclusions and exclusion filter
 dlbcl_cohort <- 
   dlbcl_cohort %>%
     mutate(eligible_flag = if_else(
-      ((chemotherapy_flag == 0) &
-       (hsct_flag == 0) &
+      ((pre_dlbcl_chemo_flag == 0) &
+       (pre_dlbcl_hsct_flag == 0) &
        (over18_flag == 1) &
        (age_sex_flag == 1)),
       1,
       0)
-    ) %>%
-    compute()
+    )
 
 #Save the table (already uploaded, no need to upload again)
 # coRanalysis::drop_compute(dlbcl_cohort, "dlbcl_cohort", "kite")
 
+# Note that futher changes to the cohort dataset will be present in 02_baseline_characteristics and 03_feasibility_analysis
+
 
 ```
+
 
 
 ```{r CODE DUMP}
