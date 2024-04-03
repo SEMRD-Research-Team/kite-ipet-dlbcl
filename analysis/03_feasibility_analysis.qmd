@@ -92,6 +92,8 @@ final_cohort <-
 
 #Save the table (already uploaded, no need to upload again)
 # coRanalysis::drop_compute(final_cohort, "final_cohort", "kite")
+final_cohort <- tbl(db_con, in_schema("kite", "final_cohort"))
+
 
 fsb_analysis$n_pct_pet <-
   final_cohort %>%
@@ -153,7 +155,7 @@ Number of chemotherapy treatment cycles from index date to 1st iPET (amongst tho
 fsb_analysis$num_chemo_cycle_index_to_ipet <-
   final_cohort %>%
     filter(ipet_flag == 1) %>%
-    mutate(index_to_ipet_cycles = (datediff("day", index_date, ipet_date)/21)) %>%
+    mutate(index_to_ipet_cycles = trunc(datediff("day", index_date, ipet_date)/21)) %>%
     standard_summary(index_to_ipet_cycles)
 
 
