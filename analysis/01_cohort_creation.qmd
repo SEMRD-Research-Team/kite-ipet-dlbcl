@@ -172,7 +172,8 @@ Patients with DLBCL in the eligibility period with complete information (gender 
 dlbcl_cohort <-
   dlbcl_cohort %>%
     left_join(index_dlbcl_demographics, join_by(token_person_id, index_dlbcl_key, index_dlbcl_key_type)) %>%
-    mutate(age_sex_flag = if_else((is.na(index_dlbcl_sex) == FALSE) &
+    mutate(age_sex_flag = if_else(((index_dlbcl_sex == 1L) |
+                                  (index_dlbcl_sex == 2L)) &
                                   (is.na(index_dlbcl_age) == FALSE),
                           1,
                           0)) %>%
@@ -180,7 +181,7 @@ dlbcl_cohort <-
 
 dlbcl_cohort %>%
   filter(age_sex_flag == 1) %>%
-  count() #13430
+  count() #13426
 
 
 ```
@@ -197,8 +198,9 @@ dlbcl_cohort <-
   compute()
 
 dlbcl_cohort %>%
-  filter(over18_flag == 1) %>%
-  count() #13373
+  filter((over18_flag == 1) &
+         (age_sex_flag == 1)) %>%
+  count() #13369
 
 
 ```
@@ -243,7 +245,7 @@ dlbcl_cohort %>%
   filter((pre_dlbcl_hsct_flag == 0) &
          (over18_flag == 1) &
          (age_sex_flag == 1)) %>%
-  count() #13334
+  count() #13330
 
 ```
 
@@ -286,7 +288,7 @@ dlbcl_cohort %>%
          (pre_dlbcl_hsct_flag == 0) &
          (over18_flag == 1) &
          (age_sex_flag == 1)) %>%
-  count() #28563
+  count() #11223
 
 
 ```

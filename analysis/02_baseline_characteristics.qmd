@@ -11,7 +11,6 @@ subtitle: "Baseline Characteristics"
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 
-
 # renv::snapshot()
 #Check for any packaging issues
 renv::status()
@@ -19,6 +18,7 @@ renv::status()
 
 
 ```
+
 
 ```{r load_libraries_and_datasets}
 library(coRanalysis)
@@ -90,7 +90,7 @@ cohort <-
                join_by(token_person_id),
                copy = TRUE) %>%
     group_by(token_person_id) %>%
-    #Create flag for chemotherapy before dlbcl diagnosis date
+    #Create flag for chemotherapy after dlbcl diagnosis date
     mutate(post_dlbcl_chemo_flag = if_else((event_date > index_dlbcl_date), 1, 0)) %>%
     slice_min(event_date, n = 1, with_ties = FALSE) %>%
     ungroup() %>%
@@ -122,7 +122,7 @@ bs_char$n_pct_chemotherapy <-
     mutate(n = format_n_pct(n, sum(n))) %>%
     rename(stat = n)
 
-#7,843 (69.9%)
+#7,840 (69.9%)
 
 
 ```
@@ -156,8 +156,8 @@ cohort <-
       #Inpatient patients use admidate instead of index_dlbcl_date
       mutate(index_date = if_else(
         ((source == "inpatient") &
-         (year(index_dlbcl_admidate) >= 2021) &
-         (year(index_dlbcl_admidate) <= 2023)), 
+         (index_dlbcl_admidate >= eligible_start) &
+         (index_dlbcl_admidate <= eligible_end)), 
             index_dlbcl_admidate, 
             index_dlbcl_date)) %>%
       #Chemo patients with chemodate <6 weeks after dlbcl_date use chemodate, 
@@ -179,8 +179,8 @@ cohort %>%
     0
   )) %>%
   count(index_date_chemo_flag)
-#4879 are 0s (index_dlbcl_date or index_dlbcl_admidate as index_date),
-#2964 are 1s (chemo_date as index_date)
+#4877 are 0s (index_dlbcl_date or index_dlbcl_admidate as index_date),
+#2963 are 1s (chemo_date as index_date)
 
 
 
@@ -218,12 +218,12 @@ cohort <-
 
 pt_char$followup <-
   cohort %>%
-    mutate(follow_up_years = (datediff("day", index_date, end_date)) / 365.25)
+    mutate(follow_up_months = (datediff("day", index_date, end_date)/30.437))
 
 bs_char$followup <-
   cohort %>%
-  mutate(follow_up_years = (datediff("day", index_date, end_date)) / 365.25) %>%
-  standard_summary(follow_up_years)
+  mutate(follow_up_months = (datediff("day", index_date, end_date)/30.437)) %>%
+  standard_summary(follow_up_months)
 
 
 ```
@@ -244,7 +244,9 @@ bs_char$gender <-
   select(index_dlbcl_sex) %>%
   count(index_dlbcl_sex) %>%
   collect() %>%
-  mutate(index_dlbcl_sex = factor(index_dlbcl_sex, c(1,2,0,9), c("Male", "Female", "Unknown", "Unknown"))) %>%
+  mutate(index_dlbcl_sex = factor(index_dlbcl_sex, 
+                                  c(1,2), 
+                                  c("Male", "Female"))) %>%
   fill_n(index_dlbcl_sex) %>%
   mutate(n = format_n_pct(n, sum(n)))
   # pivot_stat(index_dlbcl_sex) %>%
@@ -271,9 +273,10 @@ bs_char$deprivation <-
 #Save baseline characteristics
 
 ```{r}
-
+library(DBI)
 #Save the tables #ERROR UPLOADING DATSETS
 # coRanalysis::drop_compute(bs_char, "bs_char", "kite")
 # coRanalysis::drop_compute(pt_char, "pt_char", "kite")
+
 
 ```
