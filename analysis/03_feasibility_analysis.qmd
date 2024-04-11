@@ -60,6 +60,38 @@ eligible_cohort %>%
 
 ```
 
+# Internal adhoc request - Number of patients with PET scan pre-index
+
+```{r}
+# adhoc_cohort <-
+#   hes_events %>%
+#     right_join(kite_codelist %>%
+#                 filter(category == "PET scan"),
+#                join_by(code_type, code)) %>%
+#     right_join(eligible_cohort, 
+#                join_by(token_person_id, event_date < index_date)) %>%
+#     group_by(token_person_id) %>%
+#     slice_min(event_date, n = 1, with_ties = FALSE) %>%
+#     ungroup() %>%
+#     mutate(pre_index_ipet_flag = if_else((is.na(event_date) == FALSE), 1, 0)) %>%
+#     rename(
+#       pre_index_ipet_date = event_date,
+#       pre_index_ipet_code = code,
+#       pre_index_ipet_key_type = key_type
+#     ) %>%
+#     select(-key,
+#            -code_type,
+#            -code_index,
+#            -term,
+#            -category) %>%
+#     compute()
+# 
+# 
+# adhoc_cohort %>%
+#   count(pre_index_ipet_flag)
+
+```
+
 # PET scanning - N(%) of all patients with ≥1 PET scan post index*
 
 ```{r}
@@ -93,6 +125,9 @@ final_cohort %>% count(ipet_key_type)
 # coRanalysis::drop_compute(final_cohort, "final_cohort", "kite")
 # final_cohort <- tbl(db_con, in_schema("kite", "final_cohort"))
 
+#Internal adhoc request - calculate number of patients per post-index PET code
+final_cohort %>%
+  count(ipet_code)
 
 fsb_analysis$n_pct_pet <-
   final_cohort %>%
@@ -109,8 +144,10 @@ final_cohort %>%
          index_dlbcl_date,
          chemo_date, 
          ipet_date, 
-         ipet_flag)
-
+         ipet_flag) %>%
+  arrange(desc(index_date)) %>%
+  filter(ipet_flag == 1)
+  
 ```
 
 Number of patients with  ≥1 PET scan post index stratified by year of index
@@ -192,10 +229,10 @@ plots <- list()
 plots$hist_index_to_ipet_cohort <-
     fsb_analysis$hist_index_to_ipet_cohort %>%
     ggplot(aes(x = index_to_ipet_days)) +
-    geom_histogram(binwidth = 5, fill = orange) +
+    geom_histogram(binwidth = 5, fill = orange, just = 0) +
     labs(
         x = "Number of days",
-        y = "Number of readings",
+        y = "Number of patients",
         title = "Number of days between index DLBCL and iPET"
     )  +
     theme_bw() +
@@ -207,10 +244,10 @@ plots$hist_index_to_ipet_cohort
 plots$hist_index_to_ipet_cohort_1year <-
     fsb_analysis$hist_index_to_ipet_cohort %>%
     ggplot(aes(x = index_to_ipet_days)) +
-    geom_histogram(binwidth = 5, fill = orange) +
+    geom_histogram(binwidth = 5, fill = orange, just = 0) +
     labs(
         x = "Number of days",
-        y = "Number of readings",
+        y = "Number of patients",
         title = "Number of days between index DLBCL and iPET"
     )  +
     theme_bw() +
@@ -242,10 +279,10 @@ plots <- list()
 plots$hist_index_to_ipet_cycles_cohort <-
     fsb_analysis$hist_index_to_ipet_cycles_cohort %>%
     ggplot(aes(x = index_to_ipet_cycles)) +
-    geom_histogram(binwidth = 1, fill = orange) +
+    geom_histogram(binwidth = 1, fill = orange, just = 0) + #adjust the bars to start from 0 using "just" argument
     labs(
         x = "Number of cycles",
-        y = "Number of readings",
+        y = "Number of patients",
         title = "Number of treatment cycles between index DLBCL and iPET"
     )  +
     theme_bw() +
